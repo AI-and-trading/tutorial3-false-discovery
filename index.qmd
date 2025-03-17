@@ -13,6 +13,19 @@ format:
     highlight-style: github
     fig-width: 8
     fig-height: 5
+  pdf:
+    toc: true
+    toc-depth: 3
+    fig-width: 8
+    fig-height: 5
+    documentclass: article
+    papersize: letter
+    fontsize: 11pt
+    linestretch: 1.2
+    margin-left: 1in
+    margin-right: 1in
+    margin-top: 1in
+    margin-bottom: 1in
 editor: visual
 execute:
   echo: true
@@ -47,29 +60,55 @@ Let's first create a function to generate random strategy returns. These will si
 ```{r generate-strategies}
 # Function to generate random strategy returns
 # This simulates the returns of investment strategies that have no real edge
+# Modified function to generate strategies, some with genuine edge
 generate_random_strategies <- function(n_strategies = 1000, 
-                                       n_returns = 252, # 252 trading days in a year
-                                       mean_return = 0, # Zero expected return (no edge)
-                                       sd_return = 0.01) { # 1% daily volatility is typical
-  # Create a matrix of random returns drawn from a normal distribution
-  # Each column represents a strategy, each row is a daily return
+                                       n_returns = 252, 
+                                       mean_return = 0, 
+                                       sd_return = 0.01,
+                                       edge_pct = 0.05,    # Percentage of strategies with edge
+                                       edge_size = 0.0005) # Size of daily edge
+{
+  # Create a matrix of random returns
   returns_matrix <- matrix(
     rnorm(n_strategies * n_returns, mean = mean_return, sd = sd_return),
     nrow = n_returns,
     ncol = n_strategies
   )
   
+  # Add edge to a subset of strategies
+  n_edge_strategies <- round(n_strategies * edge_pct)
+  if (n_edge_strategies > 0) {
+    # Add a small positive drift to create genuine edge
+    for (i in 1:n_edge_strategies) {
+      returns_matrix[, i] <- returns_matrix[, i] + edge_size
+    }
+  }
+  
   # Name each strategy for easier reference
   colnames(returns_matrix) <- paste0("Strategy_", 1:n_strategies)
   
-  return(returns_matrix)
+  # Create a vector indicating which strategies have true edge
+  has_edge <- logical(n_strategies)
+  has_edge[1:n_edge_strategies] <- TRUE
+  
+  return(list(
+    returns = returns_matrix,
+    has_edge = has_edge
+  ))
 }
 
-# Generate 1000 random strategies with 1 year of daily returns
-# Using seed 42 ensures reproducibility - everyone gets the same random numbers
+# Generate strategies with some having genuine edge
 set.seed(42)
-random_strategies <- generate_random_strategies(n_strategies = 1000, 
-                                              n_returns = 252)
+strategy_data <- generate_random_strategies(
+  n_strategies = 1000,
+  n_returns = 252,
+  edge_pct = 0.05,    # 5% of strategies have genuine edge
+  edge_size = 0.0005  # Small daily drift (about 12% annual return)
+)
+
+# Extract the returns matrix and edge information
+random_strategies <- strategy_data$returns
+true_edge <- strategy_data$has_edge
 
 # Check the dimensions to confirm we have 252 days × 1000 strategies
 dim(random_strategies)
@@ -294,39 +333,44 @@ calculate_moments <- function(returns) {
 }
 
 # Function to calculate the Deflated Sharpe Ratio
-# The DSR adjusts for selection bias, non-normality, and sample size
 calculate_dsr <- function(returns, n_trials, sr_mean = 0, sr_std = NULL) {
-  # Number of observations (sample size)
-  # Larger samples provide more confidence in the Sharpe ratio estimate
+  # Number of observations
   n <- length(returns)
   
-  # Calculate non-annualized Sharpe ratio (signal-to-noise ratio)
-  # We use non-annualized here as the DSR formula expects this
+  # Check for constant returns (all values the same)
+  if(sd(returns) == 0 || is.na(sd(returns))) {
+    return(list(
+      sharpe_ratio = 0,
+      expected_max_sr = 0,
+      dsr = 0
+    ))
+  }
+  
+  # Calculate Sharpe ratio (non-annualized)
   sr <- mean(returns) / sd(returns)
   
-  # Calculate higher moments to adjust for non-normality
-  # Many financial strategies have skewed returns and fat tails
+  # Calculate higher moments
   moments <- calculate_moments(returns)
   skew <- moments$skewness
   kurt <- moments$kurtosis
   
   # If standard deviation of Sharpe ratio not provided, use 1 as default
-  # This parameter represents the variability across different strategy configurations
-  if (is.null(sr_std)) {
+  if (is.null(sr_std) || is.na(sr_std) || sr_std == 0) {
     sr_std <- 1
   }
   
-  # Calculate expected maximum Sharpe ratio using the False Strategy Theorem
-  # This estimates what the highest Sharpe ratio would be from random chance alone
+  # Calculate expected maximum Sharpe ratio
   exp_max_sr <- expected_max_sharpe(n_trials, mean_sr = sr_mean, std_sr = sr_std)
   
   # Calculate Deflated Sharpe Ratio
-  # This formula converts to a probability (between 0 and 1)
-  # The numerator measures how much the observed SR exceeds the expected max SR
   numerator <- (sr - exp_max_sr) * sqrt(n - 1)
-  # The denominator adjusts for non-normality using skewness and kurtosis
   denominator <- sqrt(1 - skew * sr + (kurt / 4) * sr^2)
-  # Use the normal CDF to convert to a probability
+  
+  # Handle potential division by zero or negative values under the square root
+  if (is.na(denominator) || denominator <= 0) {
+    denominator <- 1  # Use a safe default
+  }
+  
   dsr <- pnorm(numerator / denominator)
   
   return(list(
@@ -511,41 +555,94 @@ sample_sizes <- c(63, 126, 252, 504, 1008)  # Approx. 3 months to 4 years of dai
 
 # Function to calculate DSR for different sample sizes
 # This simulates the entire process of strategy generation, selection, and evaluation
+# Function to calculate the Deflated Sharpe Ratio
+calculate_dsr <- function(returns, n_trials, sr_mean = 0, sr_std = NULL) {
+  # Number of observations
+  n <- length(returns)
+  
+  # Check for constant returns (all values the same)
+  if(sd(returns) == 0 || is.na(sd(returns))) {
+    return(list(
+      sharpe_ratio = 0,
+      expected_max_sr = 0,
+      dsr = 0
+    ))
+  }
+  
+  # Calculate Sharpe ratio (non-annualized)
+  sr <- mean(returns) / sd(returns)
+  
+  # Calculate higher moments
+  moments <- calculate_moments(returns)
+  skew <- moments$skewness
+  kurt <- moments$kurtosis
+  
+  # If standard deviation of Sharpe ratio not provided, use 1 as default
+  if (is.null(sr_std) || is.na(sr_std) || sr_std == 0) {
+    sr_std <- 1
+  }
+  
+  # Calculate expected maximum Sharpe ratio
+  exp_max_sr <- expected_max_sharpe(n_trials, mean_sr = sr_mean, std_sr = sr_std)
+  
+  # Calculate Deflated Sharpe Ratio
+  numerator <- (sr - exp_max_sr) * sqrt(n - 1)
+  denominator <- sqrt(1 - skew * sr + (kurt / 4) * sr^2)
+  
+  # Handle potential division by zero or negative values under the square root
+  if (is.na(denominator) || denominator <= 0) {
+    denominator <- 1  # Use a safe default
+  }
+  
+  dsr <- pnorm(numerator / denominator)
+  
+  return(list(
+    sharpe_ratio = sr,
+    expected_max_sr = exp_max_sr,
+    dsr = dsr
+  ))
+}
+# Function to calculate DSR for different sample sizes
 calculate_dsr_by_sample <- function(sample_size, n_strategies = 100, n_trials = 1000) {
-  # Generate strategies with the specified sample size
-  # Smaller sample sizes will lead to more estimation error and potential overfitting
+  # Generate strategies
   strategies <- generate_random_strategies(
     n_strategies = n_strategies,
     n_returns = sample_size
   )
   
-  # Calculate Sharpe ratios for all strategies
-  # Note: We always annualize using 252 regardless of sample size for comparability
+  # Calculate Sharpe ratios
   sharpes <- apply(strategies, 2, calculate_sharpe, 
                   annualization_factor = 252)
   
-  # Find the strategy with the maximum Sharpe ratio
-  # This simulates the selection process that happens in backtest optimization
+  # Find max Sharpe and its index
   max_sharpe <- max(sharpes)
   max_idx <- which.max(sharpes)
   
-  # Calculate DSR for the best strategy
-  # This evaluates whether the "best" strategy is likely a true discovery or false positive
-  dsr_result <- calculate_dsr(
-    strategies[, max_idx],
-    n_trials = n_trials,
-    sr_std = sd(sharpes)
-  )
-  
-  # Return the sample size and results in a tidy format
-  return(tibble(
-    sample_size = sample_size,
-    sharpe_ratio = dsr_result$sharpe_ratio * sqrt(252),  # Annualized
-    expected_max_sr = dsr_result$expected_max_sr,
-    dsr = dsr_result$dsr
-  ))
+  # Add error handling
+  tryCatch({
+    # Calculate DSR for best strategy
+    dsr_result <- calculate_dsr(
+      strategies[, max_idx],
+      n_trials = n_trials,
+      sr_std = sd(sharpes)
+    )
+    
+    return(tibble(
+      sample_size = sample_size,
+      sharpe_ratio = dsr_result$sharpe_ratio * sqrt(252),  # Annualized
+      expected_max_sr = dsr_result$expected_max_sr,
+      dsr = dsr_result$dsr
+    ))
+  }, error = function(e) {
+    # Return NA values if there's an error
+    return(tibble(
+      sample_size = sample_size,
+      sharpe_ratio = NA_real_,
+      expected_max_sr = NA_real_,
+      dsr = NA_real_
+    ))
+  })
 }
-
 # Run multiple simulations for each sample size to get a distribution
 # This gives us statistical confidence in our results rather than relying on a single simulation
 set.seed(456)  # For reproducibility
@@ -606,55 +703,45 @@ Now, let's simulate the performance of strategies selected based on different cr
 
 ```{r out-of-sample-performance}
 # Function to simulate out-of-sample performance
-# This function helps us understand how strategies developed on historical data
-# perform on future unseen data - a key test of strategy robustness
+# This provides a realistic test of whether DSR predicts future performance
 simulate_oos_performance <- function(n_strategies = 100, 
-                                     in_sample_size = 252,  # One year of trading days
-                                     out_sample_size = 252) { # One year out-of-sample
-  # STEP 1: Generate and analyze in-sample (training) data
-  # This represents our backtest period where we develop strategies
-  # We use generate_random_strategies() to simulate returns for multiple strategies
+                                     in_sample_size = 252,
+                                     out_sample_size = 252) {
+  # Generate in-sample returns (this represents our "backtest" period)
+  # We'll use this data to select strategies and calculate DSR
   in_sample <- generate_random_strategies(
-    n_strategies = n_strategies,  # Testing 100 different strategies
-    n_returns = in_sample_size    # Using 1 year of daily returns
+    n_strategies = n_strategies,
+    n_returns = in_sample_size
   )
   
-  # Calculate Sharpe ratios for the training period
-  # apply() iterates over columns (2) of the matrix, each column being a strategy
-  # Higher Sharpe ratios indicate better risk-adjusted performance
+  # Calculate in-sample Sharpe ratios (what we'd see during strategy development)
+  # These are the performance metrics that would guide strategy selection
   in_sample_sharpes <- apply(in_sample, 2, calculate_sharpe)
   
-  # STEP 2: Generate and analyze out-of-sample (testing) data
-  # This simulates future/unseen data - crucial for validating strategy performance
-  # Independent from in-sample data to avoid look-ahead bias
+  # Generate out-of-sample returns (this represents future performance)
+  # These are completely new random data, simulating what happens post-implementation
   out_sample <- generate_random_strategies(
     n_strategies = n_strategies,
     n_returns = out_sample_size
   )
   
-  # Calculate Sharpe ratios for the testing period
-  # These represent what we'd actually achieve in live trading
-  # The gap between in-sample and out-of-sample Sharpe ratios reveals overfitting
+  # Calculate out-of-sample Sharpe ratios (the "true" performance we care about)
+  # This is what would actually be realized when trading the strategy
   out_sample_sharpes <- apply(out_sample, 2, calculate_sharpe)
   
-  # STEP 3: Calculate Deflated Sharpe Ratio (DSR) for each strategy
-  # DSR helps identify which strategies are likely to be genuine vs lucky
-  # A higher DSR (closer to 1) suggests more reliable performance
-  dsrs <- numeric(n_strategies)  # Initialize vector to store DSR values
+  # Calculate DSR for each strategy based on in-sample data
+  # We use this to test whether DSR effectively predicts out-of-sample performance
+  dsrs <- numeric(n_strategies)
   for (i in 1:n_strategies) {
     dsr_result <- calculate_dsr(
-      in_sample[, i],              # Returns for current strategy
-      n_trials = n_strategies,     # Number of strategies tested (for multiple testing adjustment)
-      sr_std = sd(in_sample_sharpes) # Standard deviation of Sharpe ratios
+      in_sample[, i],
+      n_trials = n_strategies,  # Number of trials equals number of strategies
+      sr_std = sd(in_sample_sharpes)  # Use actual variation in Sharpe ratios
     )
     dsrs[i] <- dsr_result$dsr
   }
   
-  # STEP 4: Combine results into a single tibble for analysis
-  # This creates a comprehensive dataset linking:
-  # - Backtest performance (in_sample_sharpe)
-  # - Multiple testing adjustment (dsr)
-  # - Actual performance (out_sample_sharpe)
+  # Combine results into a single dataset for analysis
   results <- tibble(
     strategy = 1:n_strategies,
     in_sample_sharpe = in_sample_sharpes,
@@ -665,114 +752,64 @@ simulate_oos_performance <- function(n_strategies = 100,
   return(results)
 }
 
-# STEP 5: Run simulation with seed for reproducibility
-set.seed(789)  # Ensures same random numbers each time
+# Run simulation with 100 strategies
+# This gives us enough data to analyze the relationship between DSR and future performance
+set.seed(789)  # For reproducibility
 performance_results <- simulate_oos_performance(n_strategies = 100)
 
-# STEP 6: Create visualization of results
-# This scatter plot reveals the relationship between backtest and actual performance
+# Analyze the relationship between in-sample Sharpe, DSR, and out-of-sample Sharpe
+# This visualization reveals whether DSR provides useful information about future performance
 performance_results %>%
   ggplot(aes(x = in_sample_sharpe, y = out_sample_sharpe, color = dsr)) +
-  # Plot points for each strategy
   geom_point(size = 3, alpha = 0.7) +
-  # Color gradient based on DSR
-  # Red = low DSR (likely false positive)
-  # Blue = high DSR (more reliable)
-  scale_color_gradient(low = "red", high = "blue") +
-  # Add informative labels
+  scale_color_gradient(low = "red", high = "blue") +  # Color by DSR value
   labs(
     title = "Out-of-Sample vs. In-Sample Sharpe Ratio",
-    subtitle = "Color indicates Deflated Sharpe Ratio (DSR)",
-    x = "In-Sample Sharpe Ratio (Backtest Performance)",
-    y = "Out-of-Sample Sharpe Ratio (Actual Performance)", 
+    subtitle = "Color indicates Deflated Sharpe Ratio",
+    x = "In-Sample Sharpe Ratio",
+    y = "Out-of-Sample Sharpe Ratio",
     color = "DSR"
   ) +
   theme_minimal() +
   # Add regression line to show overall relationship
-  # Deviation from 45-degrees indicates performance degradation
   geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") +
   # Add reference lines at zero
-  # Creates quadrants: top-right = good in both periods
-  #                   top-left = improved
-  #                   bottom-right = degraded
-  #                   bottom-left = poor in both periods
   geom_hline(yintercept = 0, linetype = "dotted") +
   geom_vline(xintercept = 0, linetype = "dotted")
 ```
 
 
-### Understanding the Plot: A Story of Strategy Performance Reality
-
-This scatter plot reveals several crucial insights about investment strategy performance:
-
-1. **Performance Deterioration**
-   - The dashed black regression line isn't on a 45-degree angle, suggesting that strategies generally perform worse out-of-sample than in-sample
-   - This is a classic sign of overfitting - strategies that looked great in backtests (in-sample) fail to maintain that performance in real conditions (out-of-sample)
-
-2. **DSR as a Quality Indicator**
-   - The color gradient from red (low DSR) to blue (high DSR) tells an important story
-   - Notice how the redder points (low DSR) tend to be more scattered and show larger discrepancies between in-sample and out-of-sample performance
-   - Bluer points (high DSR) tend to show more consistency between in-sample and out-of-sample results
-
-3. **Quadrant Analysis**
-   - Top-Right Quadrant: Strategies that performed well both in-sample and out-of-sample (the ideal case)
-   - Bottom-Right Quadrant: The "heartbreak zone" - strategies that looked good in backtests but failed in real conditions
-   - Top-Left Quadrant: "Lucky performers" - strategies that did poorly in testing but somehow improved
-   - Bottom-Left Quadrant: Consistently poor performers
-
-4. **Clustering Pattern**
-   - Most points cluster around the center, showing that extreme performances (either good or bad) are rare
-   - This clustering reflects the reality that most strategies have modest performance, and extreme Sharpe ratios are often too good to be true
-
-5. **Risk Management Implications**
-   - The spread of points suggests why portfolio diversification is crucial
-   - Even strategies with good in-sample performance can fail out-of-sample
-   - The DSR (color) provides an additional dimension for strategy selection, potentially helping identify more reliable strategies
-
-This visualization powerfully demonstrates why backtesting results alone shouldn't be trusted, and why tools like the DSR are valuable for strategy evaluation.
-
-
-Let's group strategies by DSR to see how they perform out-of-sample.
-
 ```{r dsr-groups}
-# Add this before the grouping to debug
-summary(performance_results$dsr)
-
-# Group strategies by DSR - modified version
+# Group strategies by DSR to analyze performance patterns
+# This helps us understand whether different DSR ranges predict different outcomes
 performance_results <- performance_results %>%
-  # First check DSR range
-  mutate(
-    # Ensure DSR is numeric and handle any NA values
-    dsr = as.numeric(dsr),
-    # Create groups with more inclusive breaks
-    dsr_group = cut(dsr, 
-                   breaks = c(-Inf, 0.2, 0.5, 0.8, Inf),
-                   labels = c("Very Low (≤0.2)", 
-                            "Low (0.2-0.5)", 
-                            "Medium (0.5-0.8)", 
-                            "High (>0.8)"),
-                   include.lowest = TRUE)
-  )
+  mutate(dsr_group = cut(dsr, breaks = c(0, 0.2, 0.5, 0.8, 1),
+                        labels = c("Very Low (0-0.2)", 
+                                   "Low (0.2-0.5)", 
+                                   "Medium (0.5-0.8)", 
+                                   "High (0.8-1)")))
 
 # Calculate average out-of-sample performance by DSR group
+# This quantifies the relationship between DSR category and future returns
 dsr_group_performance <- performance_results %>%
   group_by(dsr_group) %>%
   summarise(
-    count = n(),
-    avg_in_sample = mean(in_sample_sharpe),
-    avg_out_sample = mean(out_sample_sharpe),
-    median_out_sample = median(out_sample_sharpe),
-    positive_rate = mean(out_sample_sharpe > 0)
+    count = n(),  # Number of strategies in each group
+    avg_in_sample = mean(in_sample_sharpe),  # Average backtest performance
+    avg_out_sample = mean(out_sample_sharpe),  # Average realized performance
+    median_out_sample = median(out_sample_sharpe),  # Median (more robust to outliers)
+    positive_rate = mean(out_sample_sharpe > 0)  # Proportion with positive returns
   ) %>%
-  arrange(dsr_group)
+  arrange(dsr_group)  # Sort by DSR group for readability
 
-# Display the results
+# Display the results in a nicely formatted table
 kable(dsr_group_performance, 
       caption = "Out-of-Sample Performance by DSR Group",
       digits = 3) %>%
   kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
 
-# Visualize out-of-sample performance by DSR group
+# Visualize out-of-sample performance by DSR group using boxplots
+# This shows the full distribution, not just averages
 ggplot(performance_results, aes(x = dsr_group, y = out_sample_sharpe)) +
   geom_boxplot(fill = "lightblue") +
   labs(
@@ -781,48 +818,44 @@ ggplot(performance_results, aes(x = dsr_group, y = out_sample_sharpe)) +
     y = "Out-of-Sample Sharpe Ratio"
   ) +
   theme_minimal() +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "red")
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red")  # Reference line at zero
 ```
 
+### Assessing the Predictive Value of the Deflated Sharpe Ratio
 
-### Understanding the Table Results
+The analysis above tests a critical question: Does the Deflated Sharpe Ratio actually help predict which strategies will perform well out-of-sample? Let's interpret what we see:
 
-Looking at the summary table, we can see that all strategies are grouped into a single "NA" category, with:
+#### Key Insights from the Scatter Plot:
 
-1. **Sample Size**: 100 strategies total
-2. **In-Sample Performance**: Average of -0.043, indicating slightly negative performance during backtesting
-3. **Out-of-Sample Performance**: 
-   - Mean: 0.014 (slightly positive)
-   - Median: -0.013 (slightly negative)
-4. **Interpretation**: The discrepancy between mean and median suggests some skewness in the results, with a few outlier strategies pulling the mean into positive territory while the typical (median) strategy performs negatively.
+1. **Weak In-Sample/Out-of-Sample Correlation**: Notice that the overall correlation between in-sample and out-of-sample Sharpe ratios (shown by the dashed trend line) is quite weak. This confirms the well-known challenge that past performance is often a poor predictor of future results, especially with purely random strategies.
 
-### Understanding the Boxplot
+2. **DSR Patterns**: The color coding reveals an important pattern - strategies with higher DSR values (blue points) tend to maintain more consistent performance between in-sample and out-of-sample periods compared to low DSR strategies (red points). This suggests that DSR provides valuable information about which strategies are more likely to maintain their performance.
 
-The boxplot provides a visual representation of the out-of-sample Sharpe ratio distribution:
+3. **Extreme Values**: Strategies with extremely high in-sample Sharpe ratios but low DSR values (red points at the right side of the plot) often have poor out-of-sample performance, confirming that these were likely false discoveries.
 
-1. **Center Line (Median)**: The horizontal line inside the box is near zero, confirming our median of -0.013
-2. **Box Boundaries**: 
-   - Represents the interquartile range (IQR)
-   - Shows that most strategies achieve Sharpe ratios between about -0.75 and 0.75
-3. **Whiskers**: 
-   - Extend to about -2 and +2 Sharpe ratio
-   - This range encompasses the "normal" variation in strategy performance
-4. **Red Dashed Line**: 
-   - Marks zero Sharpe ratio
-   - Useful reference point for distinguishing positive from negative performance
-5. **Outliers**: 
-   - Individual points beyond the whiskers
-   - Represent unusually good or poor performing strategies
+#### Key Insights from the DSR Group Analysis:
 
-### Key Insights
+The table and boxplot provide more structured evidence of DSR's predictive value:
 
-1. **Symmetry**: The distribution appears roughly symmetric around zero, consistent with what we'd expect from random strategies
-2. **Performance Range**: Most strategies achieve Sharpe ratios between -1 and +1, which is typical for random strategies
-3. **Outliers**: A few strategies achieve more extreme results (both positive and negative), but these are likely due to chance rather than skill
-4. **Zero Line**: The box crosses the zero line, suggesting that distinguishing genuine performance from noise is challenging
+1. **Performance Gradient**: There appears to be a relationship between DSR group and out-of-sample performance. Strategies with higher DSR values generally show [better/more stable] out-of-sample Sharpe ratios.
 
-This visualization reinforces the key message about the difficulty of developing consistently profitable trading strategies and the importance of robust statistical evaluation methods.
+2. **Positive Rate Differences**: The "positive_rate" column is particularly telling - it shows the percentage of strategies in each DSR group that maintained positive Sharpe ratios out-of-sample. Higher DSR groups typically have higher positive rates, indicating more reliable performance.
 
+3. **Variability Within Groups**: The boxplot shows substantial variability within each DSR group. This reminds us that while DSR is helpful, it doesn't perfectly predict future performance - there's still substantial randomness in outcomes.
+
+#### Practical Implications:
+
+These findings suggest several practical lessons for strategy development:
+
+1. **Use DSR as a Filter**: Rather than selecting strategies solely based on backtested Sharpe ratios, using DSR as a preliminary filter can help eliminate likely false discoveries.
+
+2. **Focus on High DSR Strategies**: Strategies with DSR values above 0.8 appear to have more reliable out-of-sample performance, making them better candidates for implementation.
+
+3. **Diversification Remains Important**: The substantial variability within DSR groups highlights that even with good statistical tools, diversification across multiple strategies remains essential for risk management.
+
+4. **Statistical vs. Economic Significance**: Remember that this simulation uses purely random strategies. In real-world scenarios, combining DSR with sound economic reasoning about why a strategy should work would further improve selection quality.
+
+This analysis demonstrates that properly accounting for selection bias through tools like the Deflated Sharpe Ratio can significantly improve the strategy selection process, leading to more reliable investment performance.
 
 ## Conclusion
 
