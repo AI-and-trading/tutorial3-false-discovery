@@ -403,6 +403,20 @@ This visualization shows exactly what happens in strategy selection: we run many
 
 ## Part 3: Calculating the Deflated Sharpe Ratio
 
+:::{.callout}
+- Recall from the lecture
+
+- [The Deflated Sharpe Ratio](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2460551) computes the probability that the Sharpe Ratio (SR) is statistically significant.
+
+$$\widehat{DSR} \equiv \widehat{PSR}(\widehat{SR_0})=Z \left[\frac{(\hat{SR}-E[\max_k(\widehat{SR_k})])\sqrt{T-1}}{\sqrt{1-\hat{\gamma_3}\widehat{SR}+\frac{\hat{\gamma_4}-1}{4}\widehat{SR}^2}}\right]$$
+
+- $\widehat{DSR}$ can be interpreted as the probability of observing a Sharpe ratio greater or equal to $\widehat{SR}$ subject to the null hypothesis that the true Sharpe ratio is zero, while adjusting for skewness $\gamma_3$, kurtosis $\gamma_4$, sample length and multiple testings.
+
+- Calculate DSR requires the estimation $E[\max_k(\widehat{SR_k})]$ which requires estimating $K$ and $V(\hat{SR})$ which is where financial machine learning can help.
+
+- Specifically, we are employ optimal number of clustering to estimate $K$ the effective number of trails and then calculate the variances.
+:::
+
 Now, let's implement the Deflated Sharpe Ratio to correct for selection bias under multiple testing.
 
 ```{r dsr-calculation}
@@ -546,7 +560,11 @@ The Deflated Sharpe Ratio (DSR) we've calculated represents the probability that
 
 3.  **Deflated Sharpe Ratio**: The DSR of 0.00 means there's effectively a 0% probability that our strategy's performance is not simply the result of selection bias.
 
-To put this in perspective: - A DSR \< 0.5 (50%) suggests the strategy is more likely to be a false discovery than a true one - A DSR \< 0.05 (5%) indicates very strong evidence that the strategy is merely a product of selection bias - A DSR \> 0.95 (95%) would provide strong evidence that the strategy has genuine merit
+To put this in perspective:
+
+- A DSR < 0.5 (50%) suggests the strategy is more likely to be a false discovery than a true one 
+- A DSR < 0.05 (5%) indicates very strong evidence that the strategy is merely a product of selection bias 
+- A DSR > 0.95 (95%) would provide strong evidence that the strategy has genuine merit
 
 Our result of 0.00 indicates that despite the impressive Sharpe ratio of 3.22, our best strategy is almost certainly a false discovery. This perfectly illustrates why traditional performance metrics like the Sharpe ratio can be deceiving when multiple strategies are tested.
 
@@ -647,6 +665,41 @@ ggplot(fdr_results, aes(x = ground_truth)) +
            hjust = 0)
 ```
 
+# Intuitive Explanation of the Precision and FDR Graph
+
+This graph illustrates a fundamental challenge in quantitative investment strategy evaluation: understanding the true reliability of seemingly promising backtest results.
+
+## What the Graph Shows
+
+The graph plots two key metrics:
+
+— Precision (blue line) and False Discovery Rate (red line)
+
+—against the "Ground Truth Probability," which represents the proportion of strategies that are genuinely profitable in the universe of all possible strategies you might test.
+
+## Key Insights
+
+1. **The Critical Threshold**: The dotted vertical line marks where precision equals 50% (at approximately 6.25% ground truth probability). This means that when fewer than 6.25% of all possible strategies are genuinely profitable, you're more likely to be looking at a false positive than a true discovery, even when using standard statistical significance levels (α = 0.05).
+
+2. **Low Ground Truth Environment**: The finance industry likely operates in the far left region of this graph, where true profitable strategies are rare (perhaps 1-5% of all possibilities). In this region, the False Discovery Rate (red line) is extremely high—potentially 80-95%.
+
+3. **Statistical Power Balance**: The graph is calculated with α = 0.05 (significance level) and β = 0.2 (false negative rate), meaning your statistical test has 80% power. Despite these seemingly rigorous parameters, precision remains problematically low when true strategies are rare.
+
+
+:::{.callout}
+## Practical Implications
+
+This relationship explains why so many strategies that look promising in backtests fail in real-world implementation. Even with conventional statistical safeguards:
+
+- If only 5% of strategies are truly profitable, approximately 50% of strategies that pass your statistical tests will still be false positives.
+- If only 1% of strategies are truly profitable (which may be realistic in efficient markets), over 80% of "discoveries" will be false.
+
+The fundamental issue is that standard statistical significance (p-values) tells you the probability of seeing your results if there were no true effect, but doesn't tell you the probability that your discovery is genuine. This probability critically depends on the prevalence of true effects in your search space.
+
+This graph provides strong mathematical justification for the need for robust adjustments like the Deflated Sharpe Ratio, out-of-sample testing, and other methods to control for selection bias under multiple testing.
+:::
+
+
 Now, let's see how the FDR changes with different significance levels (alpha).
 
 ```{r fdr-vs-alpha}
@@ -688,14 +741,7 @@ ggplot(fdr_by_alpha, aes(x = alpha, y = fdr, color = factor(ground_truth))) +
 
 The plots above reveal a profound challenge in quantitative finance - the false discovery rate is alarmingly high even with traditional statistical safeguards.
 
-#### Key Insights from the First Plot:
-
-1.  **High False Discovery Rate with Low Prior Probability**: When only 1% of tested strategies are genuinely profitable (a realistic scenario in finance), the false discovery rate is approximately 94% even when using the standard significance level of 5%. This means that 94% of "discoveries" are actually false!
-
-2.  **The Prior Probability Problem**: Notice how dramatically the FDR drops as the ground truth probability increases. In fields like medicine or physics, where the prior probability of a true effect might be 20-50%, traditional statistical methods work well. But in finance, where market efficiency makes true strategies rare, these methods break down.
-
-3.  **The Reliability Threshold**: The ground truth probability needs to exceed 6.25% before the false discovery rate drops below 50% (with α=0.05 and β=0.2). This means that without a strong prior belief in a strategy's effectiveness, most statistically significant backtests are likely to be false.
-
+:::{.callout}
 #### Key Insights from the Second Plot:
 
 1.  **Significance Level Impact**: Making our statistical tests more stringent (lower α) does reduce the false discovery rate, but the effect is modest compared to the impact of the ground truth probability.
@@ -705,6 +751,7 @@ The plots above reveal a profound challenge in quantitative finance - the false 
 3.  **The Multiple Testing Connection**: This analysis reveals why multiple testing is so problematic in finance - each test increases the opportunity for false positives in an environment where true positives are rare.
 
 These findings help explain why so many published financial strategies fail to replicate and why institutional investors are rightfully skeptical of backtested performance. They also underscore the importance of methods like the Deflated Sharpe Ratio, which explicitly account for multiple testing and the low prior probability of true strategies.
+:::
 
 ### Checkpoint Questions: False Discovery Rates
 
@@ -737,7 +784,7 @@ sample_sizes <- c(63, 126, 252, 504, 1008)  # Approx. 3 months to 4 years of dai
 
 # Function to calculate DSR for different sample sizes
 calculate_dsr_by_sample <- function(sample_size, n_strategies = 100, n_trials = 1000,
-                                    edge_pct = 0.05, edge_size = 0.0005) {
+                                    edge_pct = 0.05, edge_size = 0.05) {
   # Generate strategies
   strategies_data <- generate_random_strategies(
     n_strategies = n_strategies,
@@ -1302,7 +1349,22 @@ c)  The relationship between sample size and detection power
 
 ## Advanced Exercises
 
-DSR with Cross-Validation: Implement a function that uses k-fold cross-validation to estimate the out-of-sample performance of a strategy. Calculate both the traditional Sharpe ratio and the DSR for each fold, then compare the average results. Portfolio Construction with DSR: Create a portfolio allocation scheme based on DSR values. Test different allocation rules: a) Invest only in strategies with DSR \> 0.8 b) Weight investments proportionally to DSR values c) Equal weight across all strategies Compare the out-of-sample performance of these approaches. Industry Application: Apply the DSR framework to evaluate a real-world trading strategy using either: a) A well-known technical indicator (e.g., RSI, MACD) b) A factor model (e.g., value, momentum, quality) Analyze how the strategy performs in different market regimes and whether the DSR provides a better assessment than traditional metrics.
+DSR with Cross-Validation: Implement a function that uses k-fold cross-validation to estimate the out-of-sample performance of a strategy. 
+
+Calculate both the traditional Sharpe ratio and the DSR for each fold, then compare the average results. 
+
+Portfolio Construction with DSR: Create a portfolio allocation scheme based on DSR values. 
+
+Test different allocation rules: 
+a) Invest only in strategies with DSR \> 0.8 
+b) Weight investments proportionally to DSR values 
+c) Equal weight across all strategies Compare the out-of-sample performance of these approaches. 
+
+Industry Application: Apply the DSR framework to evaluate a real-world trading strategy using either: 
+
+a) A well-known technical indicator (e.g., RSI, MACD) 
+
+b) A factor model (e.g., value, momentum, quality) Analyze how the strategy performs in different market regimes and whether the DSR provides a better assessment than traditional metrics.
 
 # Further Reading
 
