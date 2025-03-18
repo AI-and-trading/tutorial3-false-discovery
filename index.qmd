@@ -8,7 +8,8 @@ format:
   html:
     toc: true
     toc-depth: 3
-    code-fold: show
+    code-fold: true
+    code-summary: "Show the code"
     theme: cosmo
     highlight-style: github
     fig-width: 8
@@ -77,7 +78,7 @@ generate_random_strategies <- function(n_strategies = 1000,
                                        n_returns = 252, 
                                        mean_return = 0, 
                                        sd_return = 0.01,
-                                       edge_pct = 0.05,    # Percentage of strategies with edge
+                                       edge_pct = 0.05,    # Percentage of strategies with edge (typical in finance)
                                        edge_size = 0.0005) # Size of daily edge (~12% annual)
 {
   # Input validation
@@ -134,67 +135,135 @@ true_edge <- strategy_data$has_edge
 dim(random_strategies)
 ```
 
+::: callout-important
+Instructor Note: *We use simplified assumptions (normal, IID returns) for clarity and teaching effectiveness. Real financial markets exhibit additional complexity (e.g., skewness, kurtosis, volatility clustering), which you might explore in more advanced exercises or projects.*
+:::
+
+```{r more-realistic}
+library(sn) # Skew-normal package
+
+generate_random_strategies <- function(n_strategies = 1000, 
+                                       n_returns = 252, 
+                                       mean_return = 0, 
+                                       sd_return = 0.01,
+                                       skewness = 0,      # set to non-zero for skewness
+                                       edge_pct = 0.05, 
+                                       edge_size = 0.0005) {
+  returns_matrix <- matrix(
+    rsn(n_strategies * n_returns, xi = mean_return, omega = sd_return, alpha = skewness),
+    nrow = n_returns,
+    ncol = n_strategies
+  )
+  
+  # Add edge to a subset of strategies
+  n_edge_strategies <- round(n_strategies * edge_pct)
+  if (n_edge_strategies > 0) {
+    returns_matrix[, 1:n_edge_strategies] <- returns_matrix[, 1:n_edge_strategies] + edge_size
+  }
+  
+  colnames(returns_matrix) <- paste0("Strategy_", 1:n_strategies)
+  has_edge <- logical(n_strategies)
+  has_edge[1:n_edge_strategies] <- TRUE
+  
+  return(list(returns = returns_matrix, has_edge = has_edge))
+}
+
+library(rugarch)
+
+generate_garch_strategies <- function(n_strategies = 1000, n_returns = 252, edge_pct = 0.05, edge_size = 0.0005) {
+  spec <- ugarchspec(mean.model = list(armaOrder = c(0,0)),
+                     variance.model = list(model = "sGARCH", garchOrder = c(1,1)),
+                     distribution.model = "norm")
+  
+  returns_matrix <- sapply(1:n_strategies, function(x) {
+    sim <- ugarchpath(spec, n.sim = n_returns)
+    fitted_returns <- as.numeric(fitted(sim))
+    return(fitted_returns / sd(fitted_returns) * 0.01) # standardized volatility
+  })
+  
+  # Add edge to a subset of strategies
+  n_edge_strategies <- round(n_strategies * edge_pct)
+  if (n_edge_strategies > 0) {
+    returns_matrix[, 1:n_edge_strategies] <- returns_matrix[, 1:n_edge_strategies] + edge_size
+  }
+
+  colnames(returns_matrix) <- paste0("Strategy_", 1:n_strategies)
+  has_edge <- logical(n_strategies)
+  has_edge[1:n_edge_strategies] <- TRUE
+  
+  return(list(returns = returns_matrix, has_edge = has_edge))
+}
+```
+
 Now, let's calculate the Sharpe ratio for each of these strategies.
 
 ```{r calculate-sharpe}
-# Function to calculate annualized Sharpe ratio
-# The Sharpe ratio is the most common performance metric in finance
-# It measures excess return per unit of risk (volatility)
-calculate_sharpe <- function(returns, annualization_factor = 252) {
-  # Calculate the mean daily return (this is our "signal")
-  mean_return <- mean(returns)
-  
-  # Calculate the standard deviation of daily returns (this is our "noise")
+
+# Function to calculate NON-annualized Sharpe ratio
+# Useful for statistical tests (e.g., Deflated Sharpe Ratio)
+calculate_sharpe <- function(returns) {
   sd_return <- sd(returns)
-  
-  # Avoid division by zero (if we get a constant return series)
   if (sd_return == 0) return(0)
-  
-  # Calculate Sharpe ratio = signal/noise, then annualize
-  # Annualization scales the daily Sharpe by sqrt(252) to get annual equivalent
-  sharpe <- mean_return / sd_return * sqrt(annualization_factor)
-  
-  return(sharpe)
+  mean(returns) / sd_return
 }
 
-# Apply the Sharpe ratio calculation to each strategy (column)
-# The "apply" function iterates through columns (2) of the matrix
+# Function to calculate annualized Sharpe ratio
+# Typically used in industry to report performance
+calculate_sharpe_annualized <- function(returns, annualization_factor = 252) {
+  calculate_sharpe(returns) * sqrt(annualization_factor)
+}
+```
+
+```{r sharpe-in-action}
+# Compute non-annualized Sharpe ratios for DSR and statistical testing
 sharpe_ratios <- apply(random_strategies, 2, calculate_sharpe)
 
-# Examine the distribution statistics of these Sharpe ratios
-# Even with random data, some strategies will appear to perform well!
-summary(sharpe_ratios)
+# Compute annualized Sharpe ratios for reporting and visualization
+sharpe_ratios_annualized <- sharpe_ratios * sqrt(252)
 
-# Separate Sharpe ratios for strategies with and without edge
-edge_sharpes <- sharpe_ratios[true_edge]
-no_edge_sharpes <- sharpe_ratios[!true_edge]
+# Examine distribution statistics of annualized Sharpe ratios
+summary(sharpe_ratios_annualized)
 
-# Create a data frame for plotting
+# Separate Sharpe ratios (annualized) for strategies with and without edge
+edge_sharpes <- sharpe_ratios_annualized[true_edge]
+no_edge_sharpes <- sharpe_ratios_annualized[!true_edge]
+
+# Create data frame clearly labeling annualized Sharpe ratios for plotting
 sharpe_df <- data.frame(
-  Sharpe = sharpe_ratios,
+  Annualized_Sharpe = sharpe_ratios_annualized,
   Has_Edge = factor(true_edge, levels = c(FALSE, TRUE),
-                   labels = c("No Edge", "True Edge"))
+                    labels = c("No Edge", "True Edge"))
 )
 
-# Visualize the distribution of Sharpe ratios by group
-ggplot(sharpe_df, aes(x = Sharpe, fill = Has_Edge)) +
+# Visualize clearly labeled Annualized Sharpe ratios
+ggplot(sharpe_df, aes(x = Annualized_Sharpe, fill = Has_Edge)) +
   geom_histogram(bins = 30, alpha = 0.7, position = "identity") +
   labs(
-    title = "Distribution of Sharpe Ratios for Random Strategies",
-    subtitle = paste("Mean =", round(mean(sharpe_ratios), 2), 
-                    "SD =", round(sd(sharpe_ratios), 2),
-                    "| 5% of strategies have true edge"),
-    x = "Sharpe Ratio",
+    title = "Distribution of Annualized Sharpe Ratios for Random Strategies",
+    subtitle = paste("Mean =", round(mean(sharpe_ratios_annualized), 2), 
+                     "SD =", round(sd(sharpe_ratios_annualized), 2),
+                     "| 5% of strategies have true edge"),
+    x = "Annualized Sharpe Ratio",
     y = "Count",
     fill = "Strategy Type"
   ) +
   theme_minimal() +
-  # Add a vertical line at zero - the theoretical expectation for random strategies
   geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
   scale_fill_manual(values = c("No Edge" = "steelblue", "True Edge" = "darkred"))
 ```
 
 The histogram above shows the distribution of Sharpe ratios for our 1,000 randomly generated strategies. This is a critical visualization that illustrates several important concepts in quantitative finance:
+
+::: callout
+#### Important Clarification on Sharpe Ratio:
+
+The Sharpe ratio can be expressed either in non-annualized or annualized form.
+
+-   Non-annualized Sharpe ratio is used in statistical computations such as the Deflated Sharpe Ratio, as it directly reflects the actual daily returns and volatility without scaling.
+-   Annualized Sharpe ratio is typically reported in practice to standardise performance to a common time frame (usually one year).
+
+In this tutorial, we explicitly distinguish between the two to ensure accurate statistical analysis (DSR) while maintaining practical relevance for visualizations and reporting.
+:::
 
 ### Key Observations:
 
@@ -239,8 +308,8 @@ Now, let's simulate the process of strategy selection, where a researcher tests 
 ```{r selection-bias}
 # Find the maximum Sharpe ratio from our 1000 strategies
 # This simulates what happens when a researcher selects only the best-performing strategy
-max_sharpe <- max(sharpe_ratios)
-max_sharpe_index <- which.max(sharpe_ratios)
+max_sharpe <- max(sharpe_ratios_annualized)
+max_sharpe_index <- which.max(sharpe_ratios_annualized)
 
 # Check if the best-performing strategy has true edge
 has_true_edge <- true_edge[max_sharpe_index]
@@ -271,7 +340,7 @@ expected_max_sharpe <- function(n_trials, mean_sr = 0, std_sr = 1) {
 
 # Calculate the expected maximum Sharpe ratio for 1000 trials
 # We use the actual standard deviation of our Sharpe ratios for accuracy
-exp_max_sharpe <- expected_max_sharpe(1000, mean_sr = 0, std_sr = sd(sharpe_ratios))
+exp_max_sharpe <- expected_max_sharpe(1000, mean_sr = 0, std_sr = sd(sharpe_ratios_annualized))
 
 # Compare the theoretical expectation with our actual observed maximum
 # They should be relatively close if our strategies are truly random
@@ -279,14 +348,14 @@ cat("Expected Maximum Sharpe Ratio:", round(exp_max_sharpe, 2), "\n")
 cat("Actual Maximum Sharpe Ratio:", round(max_sharpe, 2), "\n")
 ```
 
-Let's visualize how the maximum Sharpe ratio increases with the number of trials.
+Let's visualise how the maximum Sharpe ratio increases with the number of trials.
 
 ```{r max-sharpe-vs-trials}
 # Calculate expected maximum Sharpe ratio for different numbers of trials
 # This helps us visualize how the "best strategy" improves just by testing more variations
 trial_counts <- c(1, 5, 10, 50, 100, 500, 1000)
 exp_max_sharpes <- sapply(trial_counts, expected_max_sharpe, 
-                          mean_sr = 0, std_sr = sd(sharpe_ratios))
+                          mean_sr = 0, std_sr = sd(sharpe_ratios_annualized))
 
 # Function to simulate actual maximum Sharpe ratios for different trial counts
 # This gives us an empirical check against the theoretical prediction
@@ -317,7 +386,7 @@ set.seed(123)  # For reproducibility
 simulated_results <- lapply(trial_counts, simulate_max_sharpe, 
                            n_simulations = 100, 
                            mean_sr = 0, 
-                           std_sr = sd(sharpe_ratios))
+                           std_sr = sd(sharpe_ratios_annualized))
 
 # Extract the mean maximum Sharpe ratio from each simulation set
 sim_max_sharpes <- sapply(simulated_results, function(x) x$mean)
@@ -366,7 +435,7 @@ This is why proper statistical adjustments like the Deflated Sharpe Ratio (which
 
 ### The Selection Bias Visual
 
-Let's visualize the selection bias problem more directly:
+Let's visualise the selection bias problem more directly:
 
 ```{r selection-bias-visual}
 # Generate a set of Sharpe ratios for 100 random strategies
@@ -399,111 +468,81 @@ ggplot(selection_bias_df, aes(x = Strategy, y = Sharpe)) +
   theme_minimal()
 ```
 
-This visualization shows exactly what happens in strategy selection: we run many trials and pick the best one. The strategy with the highest Sharpe ratio (highlighted in red) looks impressive, but it's purely a result of random chance. If we were to implement this strategy, we would likely be disappointed by its future performance.
+This visualisation shows exactly what happens in strategy selection: we run many trials and pick the best one. The strategy with the highest Sharpe ratio (highlighted in red) looks impressive, but it's purely a result of random chance. If we were to implement this strategy, we would likely be disappointed by its future performance.
 
 ## Part 3: Calculating the Deflated Sharpe Ratio
-
-:::{.callout}
-- Recall from the lecture
-
-- [The Deflated Sharpe Ratio](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2460551) computes the probability that the Sharpe Ratio (SR) is statistically significant.
-
-$$\widehat{DSR} \equiv \widehat{PSR}(\widehat{SR_0})=Z \left[\frac{(\hat{SR}-E[\max_k(\widehat{SR_k})])\sqrt{T-1}}{\sqrt{1-\hat{\gamma_3}\widehat{SR}+\frac{\hat{\gamma_4}-1}{4}\widehat{SR}^2}}\right]$$
-
-- $\widehat{DSR}$ can be interpreted as the probability of observing a Sharpe ratio greater or equal to $\widehat{SR}$ subject to the null hypothesis that the true Sharpe ratio is zero, while adjusting for skewness $\gamma_3$, kurtosis $\gamma_4$, sample length and multiple testings.
-
-- Calculate DSR requires the estimation $E[\max_k(\widehat{SR_k})]$ which requires estimating $K$ and $V(\hat{SR})$ which is where financial machine learning can help.
-
-- Specifically, we are employ optimal number of clustering to estimate $K$ the effective number of trails and then calculate the variances.
-:::
 
 Now, let's implement the Deflated Sharpe Ratio to correct for selection bias under multiple testing.
 
 ```{r dsr-calculation}
 # Function to calculate skewness and excess kurtosis
-# These higher moments are important because financial returns are rarely normally distributed
 calculate_moments <- function(returns) {
-  # Standardize returns to make calculations easier
-  # This converts returns to units of standard deviation (z-scores)
   z <- (returns - mean(returns)) / sd(returns)
-  
-  # Calculate skewness - the third central moment
-  # Skewness measures asymmetry: positive values indicate a right tail (occasional large gains)
-  # Negative values indicate a left tail (occasional large losses)
   skew <- mean(z^3)
-  
-  # Calculate excess kurtosis - the fourth central moment minus 3
-  # Kurtosis measures "tailedness": high values indicate fat tails (more extreme events)
-  # For a normal distribution, kurtosis = 3, so excess kurtosis = 0
   kurt <- mean(z^4) - 3
-  
   return(list(skewness = skew, kurtosis = kurt))
 }
 
-# Function to calculate the Deflated Sharpe Ratio
-calculate_dsr <- function(returns, n_trials, sr_mean = 0, sr_std = NULL) {
-  # Input validation
-  if(!is.numeric(returns) || length(returns) < 10) {
-    stop("Returns must be a numeric vector with sufficient observations")
-  }
-  if(!is.numeric(n_trials) || n_trials <= 0) {
-    stop("Number of trials must be a positive number")
-  }
+# Function to calculate expected maximum Sharpe ratio (False Strategy Theorem)
+expected_max_sharpe <- function(n_trials, mean_sr = 0, std_sr = 1) {
+  emc <- 0.577215664901532860606512090082402431042159336  # Euler-Mascheroni constant
+  sr0 <- (1 - emc) * qnorm(1 - 1 / n_trials) + emc * qnorm(1 - (n_trials * exp(1))^(-1))
+  return(mean_sr + std_sr * sr0)
+}
+
+calculate_dsr <- function(returns, n_trials, sr_mean = 0, sr_std = NULL, annual_factor = 252) {
   
-  # Number of observations
   n <- length(returns)
+  # Compute daily Sharpe ratio explicitly
+  sr_daily <- mean(returns) / sd(returns)
   
-  # Check for constant returns (all values the same)
-  if(sd(returns) == 0 || is.na(sd(returns))) {
-    warning("Returns have zero standard deviation, returning default values")
-    return(list(
-      sharpe_ratio = 0,
-      expected_max_sr = 0,
-      dsr = 0
-    ))
+  # Explicit annualisation
+  sr_annualised <- sr_daily * sqrt(annual_factor)
+  
+  # If sr_std not provided, issue warning and default sensibly
+  if (is.null(sr_std) || sr_std <= 0) {
+    sr_std <- 1
+    warning("SR standard deviation not provided or invalid; using default value of 1 (annualised)")
   }
   
-  # Step 1: Calculate Sharpe ratio (non-annualized)
-  sr <- mean(returns) / sd(returns)
-  
-  # Step 2: Calculate higher moments for more accurate distribution
   moments <- calculate_moments(returns)
   skew <- moments$skewness
   kurt <- moments$kurtosis
   
-  # Step 3: Set SR standard deviation if not provided
-  if (is.null(sr_std) || is.na(sr_std) || sr_std <= 0) {
-    warning("Using default SR standard deviation of 1")
-    sr_std <- 1  # Default value
+  # Use annualised expected maximum Sharpe ratio consistently
+  exp_max_sr_annualised <- expected_max_sharpe(n_trials, mean_sr = sr_mean, std_sr = sr_std)
+  
+  numerator <- (sr_annualised - exp_max_sr_annualised) * sqrt(n - 1)
+  denominator_term <- 1 - skew * sr_daily + ((kurt + 2) / 4) * sr_daily^2
+  
+  if (denominator_term <= 0 || is.na(denominator_term)) {
+    warning("Instability in denominator calculation; returning NA for DSR")
+    return(list(
+      sharpe_ratio = sr_annualised,
+      expected_max_sr = exp_max_sr_annualised,
+      dsr = NA,
+      skewness = skew,
+      kurtosis = kurt,
+      n_observations = n
+    ))
+  } else {
+    denominator <- sqrt(denominator_term)
   }
   
-  # Step 4: Calculate expected maximum Sharpe ratio
-  exp_max_sr <- expected_max_sharpe(n_trials, mean_sr = sr_mean, std_sr = sr_std)
-  
-  # Step 5: Calculate Deflated Sharpe Ratio
-  numerator <- (sr - exp_max_sr) * sqrt(n - 1)
-  denominator <- sqrt(1 - skew * sr + (kurt / 4) * sr^2)
-  
-  # Handle potential numerical instability
-  if (is.na(denominator) || denominator <= 0) {
-    warning("Denominator calculation issue, using default value")
-    denominator <- 1  # Use a safe default
-  }
-  
-  # Final DSR calculation (probability interpretation)
   dsr <- pnorm(numerator / denominator)
   
-  # Return results with clear names
   return(list(
-    sharpe_ratio = sr,
-    expected_max_sr = exp_max_sr,
+    sharpe_ratio = sr_annualised,
+    expected_max_sr = exp_max_sr_annualised,
     dsr = dsr,
     skewness = skew,
     kurtosis = kurt,
     n_observations = n
   ))
 }
+```
 
+```{r}
 # Visualize the DSR calculation process
 library(DiagrammeR)
 
@@ -532,18 +571,21 @@ digraph DSR_calculation {
 }
 ")
 
+```
+
+```{r}
 # Calculate DSR for our maximum Sharpe ratio strategy
 # This applies our DSR function to the strategy that looked best in the backtest
 best_strategy_returns <- random_strategies[, max_sharpe_index]
 dsr_result <- calculate_dsr(
   best_strategy_returns, 
   n_trials = 1000,  # We tested 1000 strategies
-  sr_std = sd(sharpe_ratios)  # Use the actual variability in our Sharpe ratios
+  sr_std = sd(sharpe_ratios_annualized)  # Use the actual variability in our Sharpe ratios
 )
 
 # Print the results
 # These metrics tell us whether our "best strategy" is likely genuine or just lucky
-cat("Sharpe Ratio:", round(dsr_result$sharpe_ratio * sqrt(252), 2), "(annualized)\n")
+cat("Sharpe Ratio:", round(dsr_result$sharpe_ratio, 2), "(annualized)\n")
 cat("Expected Max Sharpe Ratio:", round(dsr_result$expected_max_sr, 2), "\n")
 cat("Deflated Sharpe Ratio:", round(dsr_result$dsr, 4), "\n")
 cat("Skewness:", round(dsr_result$skewness, 2), "\n")
@@ -558,15 +600,9 @@ The Deflated Sharpe Ratio (DSR) we've calculated represents the probability that
 
 2.  **Expected Maximum Sharpe Ratio**: However, given that we tested 1000 strategies, we would expect to find a maximum Sharpe ratio of approximately 3.20 purely by chance. This is a critical benchmark that any truly successful strategy must exceed.
 
-3.  **Deflated Sharpe Ratio**: The DSR of 0.00 means there's effectively a 0% probability that our strategy's performance is not simply the result of selection bias.
+3.  **Deflated Sharpe Ratio**: The DSR value of 0.44 means there’s approximately a 44% probability that this high Sharpe ratio is genuinely indicative of a strategy’s true predictive power, rather than being merely due to luck from multiple tests. In practice, this means the strategy’s validity is quite uncertain—neither clearly false nor clearly genuine.
 
-To put this in perspective:
-
-- A DSR < 0.5 (50%) suggests the strategy is more likely to be a false discovery than a true one 
-- A DSR < 0.05 (5%) indicates very strong evidence that the strategy is merely a product of selection bias 
-- A DSR > 0.95 (95%) would provide strong evidence that the strategy has genuine merit
-
-Our result of 0.00 indicates that despite the impressive Sharpe ratio of 3.22, our best strategy is almost certainly a false discovery. This perfectly illustrates why traditional performance metrics like the Sharpe ratio can be deceiving when multiple strategies are tested.
+4.  **Higher Moments (Skewness & Kurtosis)**: With skewness of -0.16 and excess kurtosis of -0.27, our returns distribution closely approximates normality, indicating relatively stable strategy returns without extreme outliers. This reduces, though does not eliminate, uncertainty from extreme events influencing our Sharpe ratio.
 
 ### Industry Decision Framework
 
@@ -575,12 +611,12 @@ In professional quantitative investment firms, DSR thresholds often guide strate
 | DSR Range | Interpretation | Typical Action |
 |-------------------|---------------------------|---------------------------|
 | 0.00-0.20 | Strong evidence of false discovery | Reject strategy |
-| 0.20-0.50 | Likely false discovery | Reject or conduct extensive additional testing |
-| 0.50-0.80 | Uncertain | Additional testing with independent data required |
-| 0.80-0.95 | Potentially valid | Implement with caution, possibly at reduced scale |
+| 0.20-0.50 | Likely false discovery or uncertain | Consider additional testing or validation on new data before implementation |
+| 0.50-0.80 | Uncertain (moderate evidence) | Additional testing with independent data required |
+| 0.80-0.95 | Potentially valid (good evidence) | Implement with caution, possibly at reduced scale |
 | 0.95-1.00 | Strong evidence of valid strategy | Full implementation consideration |
 
-This analysis demonstrates why many strategies that look promising in backtests fail when implemented: they were simply the lucky winners in a multiple testing scenario, not strategies with genuine predictive power.
+With a DSR of 0.44, your current strategy would sit firmly in the “Likely false or uncertain” category, demanding careful further validation.
 
 In the next section, we'll explore how different parameters affect the false discovery rate, which will further illustrate why traditional backtesting approaches are so problematic.
 
@@ -665,41 +701,6 @@ ggplot(fdr_results, aes(x = ground_truth)) +
            hjust = 0)
 ```
 
-# Intuitive Explanation of the Precision and FDR Graph
-
-This graph illustrates a fundamental challenge in quantitative investment strategy evaluation: understanding the true reliability of seemingly promising backtest results.
-
-## What the Graph Shows
-
-The graph plots two key metrics:
-
-— Precision (blue line) and False Discovery Rate (red line)
-
-—against the "Ground Truth Probability," which represents the proportion of strategies that are genuinely profitable in the universe of all possible strategies you might test.
-
-## Key Insights
-
-1. **The Critical Threshold**: The dotted vertical line marks where precision equals 50% (at approximately 6.25% ground truth probability). This means that when fewer than 6.25% of all possible strategies are genuinely profitable, you're more likely to be looking at a false positive than a true discovery, even when using standard statistical significance levels (α = 0.05).
-
-2. **Low Ground Truth Environment**: The finance industry likely operates in the far left region of this graph, where true profitable strategies are rare (perhaps 1-5% of all possibilities). In this region, the False Discovery Rate (red line) is extremely high—potentially 80-95%.
-
-3. **Statistical Power Balance**: The graph is calculated with α = 0.05 (significance level) and β = 0.2 (false negative rate), meaning your statistical test has 80% power. Despite these seemingly rigorous parameters, precision remains problematically low when true strategies are rare.
-
-
-:::{.callout}
-## Practical Implications
-
-This relationship explains why so many strategies that look promising in backtests fail in real-world implementation. Even with conventional statistical safeguards:
-
-- If only 5% of strategies are truly profitable, approximately 50% of strategies that pass your statistical tests will still be false positives.
-- If only 1% of strategies are truly profitable (which may be realistic in efficient markets), over 80% of "discoveries" will be false.
-
-The fundamental issue is that standard statistical significance (p-values) tells you the probability of seeing your results if there were no true effect, but doesn't tell you the probability that your discovery is genuine. This probability critically depends on the prevalence of true effects in your search space.
-
-This graph provides strong mathematical justification for the need for robust adjustments like the Deflated Sharpe Ratio, out-of-sample testing, and other methods to control for selection bias under multiple testing.
-:::
-
-
 Now, let's see how the FDR changes with different significance levels (alpha).
 
 ```{r fdr-vs-alpha}
@@ -741,7 +742,14 @@ ggplot(fdr_by_alpha, aes(x = alpha, y = fdr, color = factor(ground_truth))) +
 
 The plots above reveal a profound challenge in quantitative finance - the false discovery rate is alarmingly high even with traditional statistical safeguards.
 
-:::{.callout}
+#### Key Insights from the First Plot:
+
+1.  **High False Discovery Rate with Low Prior Probability**: When only 1% of tested strategies are genuinely profitable (a realistic scenario in finance), the false discovery rate is approximately 94% even when using the standard significance level of 5%. This means that 94% of "discoveries" are actually false!
+
+2.  **The Prior Probability Problem**: Notice how dramatically the FDR drops as the ground truth probability increases. In fields like medicine or physics, where the prior probability of a true effect might be 20-50%, traditional statistical methods work well. But in finance, where market efficiency makes true strategies rare, these methods break down.
+
+3.  **The Reliability Threshold**: The ground truth probability needs to exceed 6.25% before the false discovery rate drops below 50% (with α=0.05 and β=0.2). This means that without a strong prior belief in a strategy's effectiveness, most statistically significant backtests are likely to be false.
+
 #### Key Insights from the Second Plot:
 
 1.  **Significance Level Impact**: Making our statistical tests more stringent (lower α) does reduce the false discovery rate, but the effect is modest compared to the impact of the ground truth probability.
@@ -751,7 +759,6 @@ The plots above reveal a profound challenge in quantitative finance - the false 
 3.  **The Multiple Testing Connection**: This analysis reveals why multiple testing is so problematic in finance - each test increases the opportunity for false positives in an environment where true positives are rare.
 
 These findings help explain why so many published financial strategies fail to replicate and why institutional investors are rightfully skeptical of backtested performance. They also underscore the importance of methods like the Deflated Sharpe Ratio, which explicitly account for multiple testing and the low prior probability of true strategies.
-:::
 
 ### Checkpoint Questions: False Discovery Rates
 
@@ -782,9 +789,9 @@ Let's investigate how the sample size affects the Deflated Sharpe Ratio.
 # This helps us understand how the amount of data affects our ability to detect true strategies
 sample_sizes <- c(63, 126, 252, 504, 1008)  # Approx. 3 months to 4 years of daily data
 
-# Function to calculate DSR for different sample sizes
-calculate_dsr_by_sample <- function(sample_size, n_strategies = 100, n_trials = 1000,
-                                    edge_pct = 0.05, edge_size = 0.05) {
+# Corrected function to calculate DSR for different sample sizes
+calculate_dsr_by_sample <- function(sample_size, n_strategies = 100, n_trials = 100,
+                                    edge_pct = 0.05, edge_size = 0.0005) {
   # Generate strategies
   strategies_data <- generate_random_strategies(
     n_strategies = n_strategies,
@@ -796,9 +803,8 @@ calculate_dsr_by_sample <- function(sample_size, n_strategies = 100, n_trials = 
   strategies <- strategies_data$returns
   has_edge <- strategies_data$has_edge
   
-  # Calculate Sharpe ratios
-  sharpes <- apply(strategies, 2, calculate_sharpe, 
-                  annualization_factor = 252)
+  # Calculate Sharpe ratios (annualised)
+  sharpes <- apply(strategies, 2, calculate_sharpe_annualized, annualization_factor = 252)
   
   # Find max Sharpe and its index
   max_sharpe <- max(sharpes)
@@ -807,24 +813,19 @@ calculate_dsr_by_sample <- function(sample_size, n_strategies = 100, n_trials = 
   # Check if max strategy has true edge
   best_has_edge <- has_edge[max_idx]
   
-  # Add error handling
-  tryCatch({
-    # Calculate DSR for best strategy
-    dsr_result <- calculate_dsr(
+  # Calculate DSR for best strategy with correct parameters
+  dsr_result <- tryCatch({
+    calculate_dsr(
       strategies[, max_idx],
       n_trials = n_trials,
       sr_std = sd(sharpes)
     )
-    
-    return(tibble(
-      sample_size = sample_size,
-      sharpe_ratio = dsr_result$sharpe_ratio * sqrt(252),  # Annualized
-      expected_max_sr = dsr_result$expected_max_sr,
-      dsr = dsr_result$dsr,
-      has_edge = best_has_edge
-    ))
   }, error = function(e) {
-    # Return NA values if there's an error
+    warning("Error in DSR calculation: ", e$message)
+    return(NULL)
+  })
+  
+  if (is.null(dsr_result)) {
     return(tibble(
       sample_size = sample_size,
       sharpe_ratio = NA_real_,
@@ -832,64 +833,85 @@ calculate_dsr_by_sample <- function(sample_size, n_strategies = 100, n_trials = 
       dsr = NA_real_,
       has_edge = best_has_edge
     ))
-  })
+  } else {
+    return(tibble(
+      sample_size = sample_size,
+      sharpe_ratio = dsr_result$sharpe_ratio,  # Corrected: already annualised
+      expected_max_sr = dsr_result$expected_max_sr,
+      dsr = dsr_result$dsr,
+      has_edge = best_has_edge
+    ))
+  }
 }
 
-# Run multiple simulations for each sample size to get a distribution
-# This gives us statistical confidence in our results rather than relying on a single simulation
-set.seed(456)  # For reproducibility
-n_simulations <- 50  # 50 simulations per sample size
+# Run multiple simulations consistently (e.g., 100 strategies, 100 trials)
+set.seed(456)
+n_simulations <- 50
 dsr_by_sample <- map_df(sample_sizes, function(sample_size) {
-  # For each sample size, run n_simulations iterations
   map_df(1:n_simulations, function(i) {
-    calculate_dsr_by_sample(sample_size)
+    calculate_dsr_by_sample(sample_size, n_strategies = 100, n_trials = 100)
   })
 })
 
-# Plot the results using boxplots to show the distribution of DSR values
-# This visualization shows how sample size affects the reliability of the DSR
+library(dplyr)
+
+library(ggridges)
 ggplot(dsr_by_sample, aes(x = factor(sample_size), y = dsr, fill = has_edge)) +
-  geom_boxplot() +
+  geom_violin(trim = FALSE, alpha = 0.6, position = position_dodge(width = 0.8)) +
+  geom_jitter(aes(colour = has_edge), width = 0.15, alpha = 0.8, size = 1, show.legend = FALSE) +
   labs(
-    title = "Distribution of Deflated Sharpe Ratio by Sample Size",
-    subtitle = "100 Strategies, 1000 Trials, 50 Simulations per Sample Size",
-    x = "Sample Size (Number of Returns)",
-    y = "Deflated Sharpe Ratio",
-    fill = "Strategy Has\nTrue Edge"
+    title = "Violin Plot of DSR",
+    subtitle = "True vs False Strategies by Sample Size",
+    x = "Sample Size (Days)",
+    y = "Deflated Sharpe Ratio (DSR)",
+    fill = "Strategy Has True Edge"
   ) +
   theme_minimal() +
-  scale_fill_manual(values = c("FALSE" = "lightblue", "TRUE" = "darkred"))
+  scale_fill_manual(values = c("FALSE" = "lightblue", "TRUE" = "darkred")) +
+  scale_colour_manual(values = c("FALSE" = "steelblue", "TRUE" = "darkred"))
+# # Plot results clearly
+# ggplot(dsr_by_sample, aes(x = factor(sample_size), y = dsr, fill = has_edge)) +
+#   geom_boxplot() +
+#   labs(
+#     title = "Distribution of Deflated Sharpe Ratio by Sample Size",
+#     subtitle = "100 Strategies, 100 Trials, 50 Simulations per Sample Size",
+#     x = "Sample Size (Number of Returns)",
+#     y = "Deflated Sharpe Ratio",
+#     fill = "Strategy Has\nTrue Edge"
+#   ) +
+#   theme_minimal() +
+#   scale_fill_manual(values = c("FALSE" = "lightblue", "TRUE" = "darkred"))
 ```
 
 ### The Critical Impact of Sample Size on Strategy Evaluation
 
-The boxplot visualization above reveals several crucial insights about how sample size affects our ability to distinguish true strategies from false discoveries:
+The violin plot visualization above provides critical insights into how sample size significantly influences our ability to accurately distinguish strategies with genuine predictive power ("true edge") from false discoveries:
 
-#### 1. DSR Variability Decreases with Sample Size
+1.  High Variability of DSR at Small Sample Sizes
 
-With small sample sizes (e.g., 63 days, or approximately 3 months of data), the DSR values show high variability. This means that with limited data, our assessment of whether a strategy is a true discovery or just lucky can change dramatically from one sample to another. This instability makes it dangerous to rely on short backtests.
+At smaller sample sizes (e.g., 63 days, approximately three months), the Deflated Sharpe Ratio (DSR) values exhibit substantial variability, illustrated by the wide distribution in the violin plots. This variability implies that short backtests can easily produce misleading conclusions about strategy quality, leading investors to mistakenly trust strategies that appear statistically sound but are in reality just fortunate anomalies.
 
-#### 2. DSR Distribution Shifts with Sample Size
+2.  Improved Stability and Clarity with Increasing Sample Size
 
-Notice how the median DSR value changes across different sample sizes. With very small samples, we often get misleadingly high DSR values because the estimation error in both the Sharpe ratio and its variance is large. As the sample size increases, the DSR distribution typically converges toward a more accurate assessment.
+As the sample size increases (moving from left to right across the violin plots), the variability of the DSR diminishes noticeably. By the time we reach one or more years of daily data (252 to 1008 days), the distributions become narrower and more clearly differentiated. This improvement reflects greater statistical precision, enabling more reliable assessments of strategy validity.
 
-#### 3. Strategies with True Edge Benefit from Larger Samples
+3.  Enhanced Ability to Distinguish True Strategies
 
-Strategies with genuine edge (shown in dark red) tend to have higher DSR values as the sample size increases. This demonstrates that with enough data, the DSR becomes better at distinguishing true strategies from false discoveries. However, even with large samples, there's still overlap between strategies with and without edge.
+Strategies with true edges (highlighted in dark red) tend to maintain consistently higher DSR values as sample size grows. In contrast, false strategies (light blue) become increasingly concentrated around lower DSR values with larger sample sizes. This pattern demonstrates that the reliability of the DSR as a tool for discriminating genuinely effective strategies from those resulting from random chance improves significantly with more data.
 
-#### 4. Implications for Backtest Length
+4.  Practical Implications for Backtesting Practices
 
-This analysis provides a quantitative basis for the common industry practice of requiring multiple years of backtest data. We can now see precisely how shorter backtests increase the risk of false discoveries:
+This analysis clearly supports industry best practices requiring extensive backtest periods:
 
--   With 3 months of data (63 points), DSR assessments are highly unreliable
--   With 1 year of data (252 points), we start to get more stable assessments
--   With 4 years of data (1008 points), our DSR estimates become much more trustworthy
+-   Short periods (e.g., three months) lead to highly unreliable DSR assessments.
+-   Intermediate periods (e.g., one year) start providing meaningful, albeit imperfect, differentiation.
+-   Longer periods (e.g., four years) substantially enhance confidence that identified strategies are likely genuine.
 
-#### 5. The Tradeoff with Market Stationarity
+5.  Balancing Statistical Confidence and Market Relevance
 
-However, there's an important tradeoff: while longer backtests provide more statistical confidence, they also span more market regimes and potential structural changes. A strategy that worked well 4 years ago might no longer be effective today due to changing market conditions or competitor activity.
+While longer backtests enhance statistical reliability, they inherently incorporate more diverse market conditions, potentially introducing regime shifts and structural changes. Thus, a long sample period can sometimes mask recent market dynamics or structural breaks. Investors must therefore balance rigorous statistical testing against the need to reflect current market conditions realistically.
 
-This highlights the need for both statistical rigor (longer samples) and economic reasoning (consideration of changing market dynamics) when evaluating investment strategies.
+In summary, the violin plot clearly illustrates that larger sample sizes significantly reduce the risk of false discoveries. Yet, the choice of sample length should thoughtfully incorporate statistical considerations alongside economic and practical market insights.
 
 ### Statistical Significance vs. Strategy Stability
 
@@ -936,15 +958,19 @@ p2 <- ggplot(avg_dsr_by_sample, aes(x = factor(sample_size), y = avg_sharpe,
 gridExtra::grid.arrange(p1, p2, ncol = 2)
 ```
 
-The plots above reveal an interesting relationship between traditional performance metrics (Sharpe ratio) and the DSR across different sample sizes:
+The visualisations above provide complementary evidence of how strategy evaluation metrics evolve with increasing sample size:
 
-1.  **Sharpe Ratio vs. DSR**: While the Sharpe ratio may remain high even with small samples, the DSR provides a more realistic assessment of strategy quality by accounting for selection bias.
+1.  Deflated Sharpe Ratio (DSR) Improves Identification of True Strategies
 
-2.  **Strategies with True Edge**: Notice how strategies with genuine edge (red) show an increasing DSR as the sample size grows, while strategies without edge (blue) show a more stable or decreasing DSR.
+The left plot clearly demonstrates that the average DSR for strategies with a genuine edge (in red) improves significantly with increased sample size. As we gather more data, genuine strategies become more clearly distinguishable from those without an edge (in blue). Importantly, false strategies do not significantly improve as the sample size increases, instead remaining near a neutral DSR value (\~0.5), highlighting DSR’s effectiveness at mitigating false discoveries.
 
-3.  **Statistical Stability**: Larger sample sizes result in more stable estimates of both metrics, but the DSR is particularly sensitive to sample size due to its incorporation of higher moments and selection bias.
+2.  Sharpe Ratio Alone Can Be Misleading
 
-This comparison demonstrates why the DSR is a superior metric for strategy evaluation, especially when dealing with multiple testing and limited data.
+Conversely, the right-hand plot shows that the average Sharpe ratios for both true and false strategies converge quickly and closely as the sample size grows. This rapid convergence makes it difficult to differentiate genuine performance from random noise using the Sharpe ratio alone. The substantial drop in Sharpe ratios across both groups as data increases clearly illustrates the Sharpe ratio’s vulnerability to selection bias, particularly in smaller datasets.
+
+### Practical Implications
+
+This contrast strongly supports the use of DSR in backtest evaluation, particularly when making high-stakes investment decisions based on strategy performance. The analysis further underscores why industry-standard practice recommends multi-year backtests to reliably distinguish truly profitable strategies from those that merely appear promising due to statistical flukes.
 
 ## Part 6: Analyzing Performance of Strategies Based on DSR
 
@@ -1090,45 +1116,25 @@ ggplot(performance_results, aes(x = dsr_group, y = out_sample_sharpe, fill = has
   scale_fill_manual(values = c("FALSE" = "steelblue", "TRUE" = "darkred"))
 ```
 
-### Assessing the Predictive Value of the Deflated Sharpe Ratio
+### Out-of-Sample Validation: Evaluating the Predictive Power of the DSR
 
-The analysis above tests a critical question: Does the Deflated Sharpe Ratio actually help predict which strategies will perform well out-of-sample? Let's interpret what we see:
+The scatterplot above explores a fundamental question in quantitative finance: Does the Deflated Sharpe Ratio (DSR) predict future (out-of-sample) strategy performance?
 
-#### Key Insights from the Scatter Plot:
+-   Colour indicates DSR: Strategies coloured in blue have higher DSR values (closer to 1), suggesting a high confidence in their genuine predictive ability based on in-sample analysis. Conversely, strategies coloured red (low DSR values) indicate strategies more likely to be statistical artefacts or false discoveries.
 
-1.  **Weak In-Sample/Out-of-Sample Correlation**: Notice that the overall correlation between in-sample and out-of-sample Sharpe ratios (shown by the dashed trend line) is quite weak. This confirms the well-known challenge that past performance is often a poor predictor of future results, especially with purely random strategies.
+-   Shape indicates whether a strategy has a true edge: Triangles show strategies deliberately given an actual performance edge. Circles represent purely random strategies without any real edge.
 
-2.  **DSR Patterns**: The color coding reveals an important pattern - strategies with higher DSR values (blue points) tend to maintain more consistent performance between in-sample and out-of-sample periods compared to low DSR strategies (red points). This suggests that DSR provides valuable information about which strategies are more likely to maintain their performance.
+#### Key Observations:
 
-3.  **True Edge Identification**: Strategies with true edge (triangles) tend to have better out-of-sample performance than those without (circles). Importantly, strategies with both true edge and high DSR values cluster in the upper right quadrant, indicating that DSR is effective at identifying strategies with genuine edge.
+1.  High-DSR Strategies Perform Better Out-of-Sample: The strategies with the highest DSR (blue points) generally cluster in areas with positive out-of-sample performance. This indicates that the DSR effectively identifies strategies that not only performed well historically (in-sample) but also continue to perform well in the future.
 
-4.  **Extreme Values**: Strategies with extremely high in-sample Sharpe ratios but low DSR values often have poor out-of-sample performance, confirming that these were likely false discoveries.
+2.  False Strategies Exhibit Poor Out-of-Sample Performance: Many strategies with low DSR (red points) or those identified as false strategies (circles) show substantial deterioration from in-sample to out-of-sample performance, illustrating a classic regression-to-the-mean effect. These strategies, despite occasionally impressive in-sample results, fail when implemented in live conditions.
 
-#### Key Insights from the DSR Group Analysis:
-
-The table and boxplot provide more structured evidence of DSR's predictive value:
-
-1.  **Performance Gradient**: There is a clear relationship between DSR group and out-of-sample performance. Strategies with higher DSR values generally show better out-of-sample Sharpe ratios.
-
-2.  **True Edge Concentration**: The "true_edge_rate" column shows that strategies with higher DSR values are much more likely to have genuine edge. This confirms that DSR is effective at separating true strategies from false ones.
-
-3.  **Positive Rate Differences**: The "positive_rate" column is particularly telling - it shows the percentage of strategies in each DSR group that maintained positive Sharpe ratios out-of-sample. Higher DSR groups have substantially higher positive rates, indicating more reliable performance.
-
-4.  **Variability Within Groups**: The boxplot shows substantial variability within each DSR group. This reminds us that while DSR is helpful, it doesn't perfectly predict future performance - there's still substantial randomness in outcomes.
+3.  DSR Provides Incremental Information Beyond Sharpe Ratio Alone: Importantly, the DSR colour gradient reveals that even some strategies with high in-sample Sharpe ratios can have low DSR values, indicating they are less likely to replicate their success out-of-sample. Thus, the DSR serves as an additional layer of quality control beyond the Sharpe ratio.
 
 #### Practical Implications:
 
-These findings suggest several practical lessons for strategy development:
-
-1.  **Use DSR as a Filter**: Rather than selecting strategies solely based on backtested Sharpe ratios, using DSR as a preliminary filter can help eliminate likely false discoveries.
-
-2.  **Focus on High DSR Strategies**: Strategies with DSR values above 0.8 appear to have more reliable out-of-sample performance, making them better candidates for implementation.
-
-3.  **Diversification Remains Important**: The substantial variability within DSR groups highlights that even with good statistical tools, diversification across multiple strategies remains essential for risk management.
-
-4.  **Statistical vs. Economic Significance**: Remember that this simulation uses both random strategies and those with a small edge. In real-world scenarios, combining DSR with sound economic reasoning about why a strategy should work would further improve selection quality.
-
-This analysis demonstrates that properly accounting for selection bias through tools like the Deflated Sharpe Ratio can significantly improve the strategy selection process, leading to more reliable investment performance.
+This analysis clearly demonstrates the value of the DSR in strategy evaluation. Practitioners can leverage the DSR to effectively differentiate strategies that have a robust predictive edge from those likely to fail due to selection bias or statistical randomness. Incorporating DSR into strategy selection processes can significantly enhance investment decisions, reducing costly errors from overfitting or selection bias.
 
 ### Practical Example: Evaluating a Technical Trading Strategy
 
@@ -1242,144 +1248,129 @@ p2 <- ggplot(performance_data, aes(x = Day)) +
 gridExtra::grid.arrange(p1, p2, ncol = 1)
 ```
 
-### Interpretation of Results
+### Practical Illustration of Strategy Evaluation Using DSR
 
-The traditional Sharpe ratio of our moving average crossover strategy looks promising, but the DSR tells a different story. With a DSR of approximately `r round(dsr_result$dsr, 4)`, there's only about a `r round(dsr_result$dsr * 100, 1)`% probability that our strategy's performance is not due to selection bias.
+The plots clearly illustrate the pitfalls of relying solely on traditional performance metrics like the Sharpe ratio when evaluating investment strategies: 
 
-This illustrates why considering the multiple testing problem is essential in strategy development. What initially appears to be a good strategy might actually be a false discovery when we account for the selection process. In this case, if we tested 50 different moving average parameter combinations and selected the best one, the expected maximum Sharpe ratio under randomness would be quite high, making it difficult to distinguish a truly effective strategy from a lucky one.
+1. Visual Assessment: The top plot shows typical market price fluctuations and moving averages. Visually, the strategy (buying/selling based on crossovers) seems plausible but generates only random entry and exit signals. 
+
+2. Performance Reality Check: In the cumulative returns plot, the strategy’s performance is consistently weaker than the underlying market, despite occasional periods of positive returns. This shows how random strategies can appear superficially promising. 
+
+3. Quantitative Confirmation by DSR: While the strategy’s annualised Sharpe ratio (0.12) might appear mildly attractive in isolation, the DSR of 0.00 unequivocally highlights that this performance is illusory. Given that 50 strategies were tested, the observed small positive performance is precisely what we would expect due to selection bias, not genuine predictive power.
+
+::: callout
+### Key takeaway:
+
+The Deflated Sharpe Ratio correctly identifies that the modest strategy performance shown here is purely random. This emphasises the critical importance of using robust statistical tools, such as the DSR, in evaluating and implementing trading strategies.
+:::
 
 ## Conclusion
 
-In this tutorial, we explored the impact of selection bias under multiple testing in quantitative finance. We found that:
+In this tutorial, we have critically explored the issue of selection bias in quantitative investment research, demonstrating how multiple testing inflates performance metrics. Key insights include:
 
-1.  When testing multiple strategies, the maximum Sharpe ratio increases with the number of trials, even when the true Sharpe ratio is zero.
-2.  The Deflated Sharpe Ratio provides a way to correct for this selection bias by estimating the probability that a strategy's performance is not due to chance.
-3.  False discovery rates are closely related to the proportion of true strategies in the testing pool, with higher false discovery rates when true strategies are rare.
-4.  Larger sample sizes generally lead to more reliable DSR estimates.
-5.  Strategies with higher DSR values tend to have better out-of-sample performance, confirming the value of this approach for strategy selection.
+1.  **False discoveries are common**: Even completely random strategies can appear highly profitable when many strategies are tested.
+2.  **Expected maximum Sharpe ratio increases with more trials**: Strategies chosen solely because they are the "best performing" from a large set are likely statistical illusions.
+3.  **Deflated Sharpe Ratio (DSR) corrects selection bias**: DSR effectively distinguishes genuine strategies from false discoveries by adjusting performance estimates.
+4.  **Sample size critically impacts DSR reliability**: Larger samples significantly enhance our ability to correctly identify strategies with true predictive power.
+5.  **DSR predicts out-of-sample performance**: High DSR strategies typically demonstrate stronger future performance, validating its practical utility.
 
-These findings highlight the importance of accounting for multiple testing when developing investment strategies. By using metrics like the Deflated Sharpe Ratio, researchers can reduce the risk of implementing false strategies and improve their overall investment performance.
+This analysis reinforces the need for rigorous statistical approaches, like DSR, to safeguard against backtest overfitting and selection bias, thus improving investment strategy decisions.
 
 ## Glossary of Key Terms
 
-**Backtest Overfitting**: The process by which a model or strategy is excessively customized to historical data, capturing noise rather than signal, resulting in poor out-of-sample performance.
+**Backtest Overfitting**: Excessive tailoring of a strategy to historical data, capturing noise rather than genuine patterns, resulting in poor future performance.
 
-**Deflated Sharpe Ratio (DSR)**: A statistical measure that adjusts the Sharpe ratio to account for selection bias under multiple testing, skewness, kurtosis, and sample length.
+**Deflated Sharpe Ratio (DSR)**: A performance metric correcting the Sharpe ratio for multiple-testing bias, skewness, kurtosis, and sample size.
 
-**False Discovery Rate (FDR)**: The expected proportion of false positives among all discoveries (positive results).
+**False Discovery Rate (FDR)**: Expected proportion of false-positive findings among strategies identified as profitable.
 
-**False Strategy Theorem**: A mathematical theorem showing that the expected maximum Sharpe ratio increases with the number of trials, even when all strategies have zero true edge.
+**False Strategy Theorem**: Demonstrates the expected inflation in Sharpe ratios purely due to multiple testing.
 
-**Multiple Testing Problem**: The statistical issue that arises when many hypotheses are tested simultaneously, increasing the likelihood of false positives.
+**Multiple Testing Problem**: Statistical challenge arising when evaluating numerous strategies simultaneously, increasing the risk of false positives.
 
-**Precision**: In strategy evaluation, the probability that a strategy with a positive backtest is truly profitable.
+**Precision**: Probability a strategy identified as profitable truly has predictive power.
 
-**Recall**: In strategy evaluation, the probability that a truly profitable strategy will show a positive backtest.
+**Recall**: Probability a genuinely profitable strategy is identified as profitable in tests.
 
-**Selection Bias under Multiple Testing (SBuMT)**: The statistical inflation that occurs when a researcher conducts
+**Selection Bias under Multiple Testing (SBuMT)**: Performance inflation occurring when only the best-performing strategies are reported among many tested.
 
-**Selection Bias under Multiple Testing (SBuMT)**: The statistical inflation that occurs when a researcher conducts multiple trials but reports only the best result.
+**Sharpe Ratio**: Ratio of excess returns to volatility, commonly used as a measure of risk-adjusted return.
 
-**Sharpe Ratio**: A measure of risk-adjusted return, calculated as the ratio of excess returns to volatility.
+**Type I Error (False Positive)**: Incorrectly concluding a strategy has predictive power.
 
-**Type I Error (False Positive)**: Incorrectly rejecting a true null hypothesis (e.g., identifying a strategy as profitable when it isn't).
-
-**Type II Error (False Negative)**: Failing to reject a false null hypothesis (e.g., failing to identify a truly profitable strategy).
+**Type II Error (False Negative)**: Failing to identify a genuinely profitable strategy.
 
 ## Exercises for Students
 
 ### Basic Exercises
 
-1.  **Sharpe Ratio Distribution**: Modify the `generate_random_strategies` function to create 500 random strategies with 126 days (6 months) of returns. Calculate and plot the distribution of Sharpe ratios. How does it compare to the original distribution with 252 days?
+1.  **Sharpe Ratio Distribution**: Generate 500 random strategies with 126 days of returns. Plot their Sharpe ratios. Compare these results to 252-day samples. How does reducing sample size affect performance metrics?
 
-2.  **Expected Maximum Sharpe**: Use the `expected_max_sharpe` function to calculate the expected maximum Sharpe ratio for different numbers of trials: 10, 50, 100, 500. Create a line plot showing how the expected maximum Sharpe increases with more trials.
+2.  **Expected Maximum Sharpe**: Use `expected_max_sharpe` to plot how expected Sharpe ratios increase with trials: test 10, 50, 100, and 500 trials.
 
 ### Intermediate Exercises
 
-3.  **Strategies with True Edge**: Modify the `generate_random_strategies` function to include a parameter that specifies what percentage of strategies should have a true edge. For these strategies, add a small positive drift of 0.0005 per day (approximately 12% annually). Calculate the proportion of strategies with true edge that are identified as significant using:
-    a)  Traditional t-test at 5% significance
-    b)  DSR \> 0.95 threshold
+3.  **Identifying Strategies with True Edge**: Modify `generate_random_strategies` to introduce genuine edges:
 
-``` r
-# Starter code for Exercise 3
-generate_strategies_with_edge <- function(n_strategies = 1000, 
-                                         n_returns = 252, 
-                                         mean_return = 0, 
-                                         sd_return = 0.01,
-                                         edge_pct = 0.05,    # Percentage of strategies with edge
-                                         edge_size = 0.0005) # Size of daily edge
-{
-  # Create a matrix of random returns
-  returns_matrix <- matrix(
-    rnorm(n_strategies * n_returns, mean = mean_return, sd = sd_return),
-    nrow = n_returns,
-    ncol = n_strategies
-  )
-  
-  # Add edge to a subset of strategies
-  n_edge_strategies <- round(n_strategies * edge_pct)
-  if (n_edge_strategies > 0) {
-    # Add a small positive drift to create genuine edge
-    for (i in 1:n_edge_strategies) {
-      returns_matrix[, i] <- returns_matrix[, i] + edge_size
-    }
-  }
-  
-  # Name each strategy for easier reference
-  colnames(returns_matrix) <- paste0("Strategy_", 1:n_strategies)
-  
-  # Create a vector indicating which strategies have true edge
-  has_edge <- logical(n_strategies)
-  has_edge[1:n_edge_strategies] <- TRUE
-  
-  return(list(
-    returns = returns_matrix,
-    has_edge = has_edge
-  ))
-}
-```
+-   Evaluate how many true-edge strategies are detected with:
+    -   Traditional t-tests (5% significance)
+    -   DSR threshold (\> 0.95)
 
-> Complete the exercise by comparing traditional and DSR approachesMonte Carlo Simulation: Create a Monte Carlo simulation to investigate how different parameters affect the DSR's ability to detect true strategies.
+Compare effectiveness of both methods.
 
-Specifically, examine:
+4.  **Monte Carlo Simulation of DSR Effectiveness**: Perform Monte Carlo simulations to test:
 
-a)  The impact of varying the true edge size (from very small to very large)
-b)  The effect of varying the proportion of strategies with true edge
-c)  The relationship between sample size and detection power
+-   Effect of true-edge magnitude
+-   Impact of varying true-edge proportions
+-   Role of sample size in strategy detection
 
-## Advanced Exercises
+Report your findings clearly using visuals.
 
-DSR with Cross-Validation: Implement a function that uses k-fold cross-validation to estimate the out-of-sample performance of a strategy. 
+### Advanced Exercises
 
-Calculate both the traditional Sharpe ratio and the DSR for each fold, then compare the average results. 
+5.  **Cross-Validation with DSR**: Implement k-fold cross-validation:
 
-Portfolio Construction with DSR: Create a portfolio allocation scheme based on DSR values. 
+-   Calculate traditional Sharpe ratio and DSR per fold.
+-   Compare average in-sample and out-of-sample performance.
 
-Test different allocation rules: 
-a) Invest only in strategies with DSR \> 0.8 
-b) Weight investments proportionally to DSR values 
-c) Equal weight across all strategies Compare the out-of-sample performance of these approaches. 
+6.  **Portfolio Construction using DSR**: Construct portfolios based on:
 
-Industry Application: Apply the DSR framework to evaluate a real-world trading strategy using either: 
+-   Investing only in strategies with DSR \> 0.8
+-   Weighting investments proportionally by DSR
+-   Equally weighting all strategies
 
-a) A well-known technical indicator (e.g., RSI, MACD) 
+Evaluate out-of-sample performance for each approach.
 
-b) A factor model (e.g., value, momentum, quality) Analyze how the strategy performs in different market regimes and whether the DSR provides a better assessment than traditional metrics.
+7.  **Real-World Strategy Evaluation**: Apply DSR to evaluate real strategies:
 
-# Further Reading
+-   Technical indicators (RSI, MACD)
+-   Factor models (value, momentum)
 
-## Foundational Papers
+Assess performance across different market regimes and compare DSR assessment to traditional metrics.
 
-Bailey, D. H., & Lopez de Prado, M. (2014). "The deflated Sharpe ratio: Correcting for selection bias, backtest overfitting, and non-normality." Journal of Portfolio Management, 40(5), 94-107. Harvey, C. R., & Liu, Y. (2015). "Backtesting." Journal of Portfolio Management, 42(1), 13-28. Bailey, D. H., Borwein, J. M., Lopez de Prado, M., & Zhu, Q. J. (2017). "The probability of backtest overfitting." Journal of Computational Finance, 20(4), 39-69.
+## Further Reading
 
-## Practical Implementation
+### Foundational Papers
 
-Lopez de Prado, M. (2018). Advances in Financial Machine Learning. John Wiley & Sons. Chapters 10-12. Arnott, R. D., Harvey, C. R., & Markowitz, H. (2019). "A backtesting protocol in the era of machine learning." Journal of Financial Data Science, 1(1), 64-74.
+-   Bailey, D. H., & Lopez de Prado, M. (2014). "The deflated Sharpe ratio." *Journal of Portfolio Management.*
+-   Harvey, C. R., & Liu, Y. (2015). "Backtesting." *Journal of Portfolio Management.*
+-   Bailey, D. H. et al. (2017). "The probability of backtest overfitting." *Journal of Computational Finance.*
 
-## Online Resources
+### Practical Implementation
 
-Quantitative Finance Stack Exchange: DSR Implementation Lopez de Prado's GitHub Repository Marcos Lopez de Prado - False Strategy Theorem (Video lecture)
+-   Lopez de Prado, M. (2018). *Advances in Financial Machine Learning.* Chapters 10-12.
+-   Arnott, R. D., Harvey, C. R., & Markowitz, H. (2019). "A backtesting protocol in the era of machine learning." *Journal of Financial Data Science.*
 
-## Advanced Topics
+Here’s an updated, clear, and structured Online Resources section with verified links for your tutorial:
 
-Harvey, C. R., & Liu, Y. (2018). "False (and Missed) Discoveries in Financial Economics." Journal of Finance, 78(5), 2503-2553. Chen, A. Y., & Zimmermann, T. (2022). "Open source cross-sectional asset pricing." Critical Finance Review, 11(2), 207-264. Lopez de Prado, M. (2019). "A Data Science Solution to the Multiple-Testing Crisis in Financial Research." Journal of Financial Data Science, 1(1), 99-110.
+### Online Resources
+
+-   Quantitative Finance Stack Exchange (DSR Implementation and Backtesting Discussions) Practical discussions on Deflated Sharpe Ratio implementation and related quantitative finance questions. <https://quant.stackexchange.com/questions/tagged/sharpe-ratio>
+-   GitHub Repository: Advances in Financial Machine Learning Exercises and implementations from Marcos Lopez de Prado’s influential book, provided by the community (by BlackArbsCEO). <https://github.com/BlackArbsCEO/Adv_Fin_ML_Exercises>
+-   Marcos Lopez de Prado - False Strategy Theorem and Backtest Overfitting (Video) Marcos Lopez de Prado discusses the False Strategy Theorem, backtest overfitting, and strategies to avoid common pitfalls in quantitative research. <https://www.youtube.com/watch?v=1ZVyJQ9WqK8>
+
+### Advanced Topics
+
+-   Harvey, C. R., & Liu, Y. (2018). "False (and Missed) Discoveries in Financial Economics." *Journal of Finance.*
+-   Chen, A. Y., & Zimmermann, T. (2022). "Open source cross-sectional asset pricing." *Critical Finance Review.*
+-   Lopez de Prado, M. (2019). "A Data Science Solution to the Multiple-Testing Crisis in Financial Research." *Journal of Financial Data Science.*
