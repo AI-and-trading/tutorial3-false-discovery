@@ -12,6 +12,9 @@ format:
     code-summary: "Show the code"
     theme: cosmo
     highlight-style: github
+    includes:
+      in_header: 
+        - <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
     fig-width: 8
     fig-height: 5
   pdf:
@@ -33,6 +36,26 @@ execute:
   warning: false
   message: false
 ---
+
+<!-- Add download and GitHub links at the top -->
+<div class="download-links">
+  <a href="index.pdf" download>
+    <i class="fa fa-file-pdf-o"></i> Download PDF version
+  </a>
+  <br>
+  <a href="https://github.com/advanced-financial-data-analytics/tutorial5" target="_blank">
+    <i class="fa fa-github"></i> View source on GitHub
+  </a>
+</div>
+
+<style>
+.solution {
+  background-color: #f5f5f5;
+  border-left: 5px solid #4CAF50;
+  padding: 10px;
+  margin-bottom: 15px;
+}
+</style>
 
 ```{r setup}
 # Load required libraries
